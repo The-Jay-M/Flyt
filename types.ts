@@ -16,6 +16,7 @@ export interface PDFDocument {
   currentPage: number;
   lastRead: Date;
   size: string;
+  fileUrl?: string; // URL for the actual PDF blob
 }
 
 export interface Bookmark {

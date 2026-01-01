@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { PDFDocument, ThemeMode, ReaderSettings } from '../types';
+import * as pdfjsLib from 'pdfjs-dist';
 import { 
   ChevronLeft, 
   Settings, 
@@ -16,16 +17,20 @@ import {
   X,
   Layout,
   AlignLeft,
-  BookOpen
+  Loader2
 } from 'lucide-react';
+
+// Configure PDF.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.8.69/build/pdf.worker.mjs`;
 
 interface ReaderProps {
   pdfs: PDFDocument[];
   settings: ReaderSettings;
   onUpdateSettings: (settings: ReaderSettings) => void;
+  onUpdatePdf: (id: string, updates: Partial<PDFDocument>) => void;
 }
 
-const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings }) => {
+const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings, onUpdatePdf }) => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const pdf = pdfs.find(p => p.id === id);
@@ -34,12 +39,101 @@ const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings }) => 
   const [currentPage, setCurrentPage] = useState(pdf?.currentPage || 1);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [loading, setLoading] = useState(!!pdf?.fileUrl);
   
   const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRefs = useRef<{ [key: number]: HTMLCanvasElement | null }>({});
+  const activeRenderTasks = useRef<{ [key: number]: any }>({});
+  const pdfInstance = useRef<any>(null);
 
+  const renderPage = useCallback(async (pageNum: number) => {
+    if (!pdfInstance.current || !canvasRefs.current[pageNum]) return;
+    
+    const canvas = canvasRefs.current[pageNum];
+    const context = canvas?.getContext('2d');
+    if (!context) return;
+
+    // Cancel any existing render task for this specific page/canvas
+    if (activeRenderTasks.current[pageNum]) {
+      try {
+        activeRenderTasks.current[pageNum].cancel();
+      } catch (e) {
+        // Ignore cancellation errors
+      }
+      delete activeRenderTasks.current[pageNum];
+    }
+
+    try {
+      const page = await pdfInstance.current.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 2 });
+      
+      canvas!.height = viewport.height;
+      canvas!.width = viewport.width;
+
+      const renderContext = {
+        canvasContext: context,
+        viewport: viewport,
+      };
+
+      const renderTask = page.render(renderContext);
+      activeRenderTasks.current[pageNum] = renderTask;
+
+      await renderTask.promise;
+      delete activeRenderTasks.current[pageNum];
+    } catch (err: any) {
+      if (err.name === 'RenderingCancelledException') {
+        // This is expected when we cancel a task, so we don't log it as an error
+      } else {
+        console.error(`Error rendering page ${pageNum}:`, err);
+      }
+    }
+  }, []);
+
+  // Effect to load the PDF document
   useEffect(() => {
-    if (!pdf) navigate('/');
-  }, [pdf, navigate]);
+    if (!pdf) {
+      navigate('/');
+      return;
+    }
+
+    if (pdf.fileUrl) {
+      const loadPdf = async () => {
+        setLoading(true);
+        try {
+          const loadingTask = pdfjsLib.getDocument(pdf.fileUrl!);
+          const doc = await loadingTask.promise;
+          pdfInstance.current = doc;
+          onUpdatePdf(pdf.id, { totalPages: doc.numPages });
+          setLoading(false);
+          // Initial render of current page
+          renderPage(currentPage);
+        } catch (err) {
+          console.error("Error loading PDF:", err);
+          setLoading(false);
+        }
+      };
+      loadPdf();
+    }
+
+    // Cleanup active tasks on unmount
+    return () => {
+      Object.values(activeRenderTasks.current).forEach((task: any) => {
+        try { task.cancel(); } catch (e) {}
+      });
+    };
+  }, [id, pdf?.fileUrl]);
+
+  // Effect to trigger rendering when page changes
+  useEffect(() => {
+    if (pdfInstance.current) {
+      renderPage(currentPage);
+      if (currentPage < pdfInstance.current.numPages) {
+        // Small delay for pre-rendering next page to avoid blocking main thread
+        const timeoutId = setTimeout(() => renderPage(currentPage + 1), 200);
+        return () => clearTimeout(timeoutId);
+      }
+    }
+  }, [currentPage, renderPage]);
 
   const toggleControls = () => setShowControls(!showControls);
 
@@ -60,8 +154,10 @@ const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings }) => 
   };
 
   const handlePageChange = (newPage: number) => {
-    if (newPage >= 1 && newPage <= (pdf?.totalPages || 1)) {
+    const total = pdfInstance.current?.numPages || pdf?.totalPages || 1;
+    if (newPage >= 1 && newPage <= total) {
       setCurrentPage(newPage);
+      onUpdatePdf(pdf!.id, { currentPage: newPage });
     }
   };
 
@@ -83,56 +179,68 @@ const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings }) => 
       className={`h-full w-full relative transition-colors duration-500 ease-in-out ${themeClasses[settings.theme]} select-none overflow-hidden`}
       style={{ filter: `brightness(${settings.brightness}%)` }}
     >
-      {/* Immersive Page Content */}
       <div 
-        className="h-full w-full flex flex-col items-center justify-start overflow-y-auto no-scrollbar pt-12 pb-24 px-6 md:px-0"
+        className="h-full w-full flex flex-col items-center justify-start overflow-y-auto no-scrollbar pt-12 pb-24 px-4 md:px-0"
         onClick={toggleControls}
       >
-        <div className="w-full max-w-2xl flex flex-col gap-12">
-          {/* Mock Pages */}
-          {[currentPage, currentPage + 1].map((pNum) => (
-            <div 
-              key={pNum} 
-              className="w-full aspect-[1/1.4] shadow-2xl rounded-sm p-12 transition-all duration-300 relative flex flex-col"
-              style={{ backgroundColor: pageColor[settings.theme] }}
-            >
-              {/* Ruler Overlay */}
-              {settings.isRulerEnabled && (
-                <div className="absolute top-1/2 left-0 right-0 h-10 bg-blue-500/10 border-y border-blue-500/30 pointer-events-none z-10 flex items-center justify-center">
-                   <div className="w-full h-[1px] bg-blue-500/20" />
-                </div>
-              )}
-              
-              <div className="flex justify-between items-center mb-8 opacity-40 text-[10px] font-semibold tracking-widest uppercase">
-                <span>{pdf.title}</span>
-                <span>Page {pNum}</span>
-              </div>
-              
-              <div className="flex-1 font-serif text-justify space-y-6" style={{ fontSize: `${settings.fontSize}px`, lineHeight: settings.lineHeight }}>
-                <h1 className="text-2xl font-bold mb-8">Chapter {Math.ceil(pNum / 10)}</h1>
-                <p>
-                  The silhouette of the great structure loomed against the twilight sky. It was a testament to the ambitions of an era long since passed into legend. Everywhere one looked, there were intricate carvings that whispered secrets of a bygone age, if only one knew how to listen.
-                </p>
-                <p>
-                  As I stood there, the cool evening air began to settle. The world seemed to hold its breath. This was the moment I had waited for—the culmination of years of study and sacrifice. The heavy tome in my satchel felt suddenly light, its weight replaced by the anticipation of discovery.
-                </p>
-                <p>
-                  Wait until you see what lies within the hidden chambers. Scholars had debated their existence for centuries, but here I was, the first to find the key. The silver-etched surface of the portal glimmered under my touch, feeling cold and ancient.
-                </p>
-                <p>
-                  "Are you sure about this?" a voice echoed from the darkness behind me. It was Kaelen, always the cautious one. I didn't need to turn around to know the expression on his face—one part concern, two parts skepticism. 
-                </p>
-              </div>
-
-              <div className="mt-8 text-center opacity-30 text-xs">
-                {pNum}
-              </div>
+        <div className="w-full max-w-2xl flex flex-col gap-8 md:gap-12">
+          {loading ? (
+            <div className="flex flex-col items-center justify-center py-40 gap-4 opacity-50">
+              <Loader2 size={40} className="animate-spin text-blue-600" />
+              <p className="text-sm font-medium">Opening Document...</p>
             </div>
-          ))}
+          ) : (
+            [currentPage, currentPage + 1].map((pNum) => {
+              if (pdfInstance.current && pNum > pdfInstance.current.numPages) return null;
+              if (!pdfInstance.current && pNum > pdf.totalPages) return null;
+              
+              return (
+                <div 
+                  key={pNum} 
+                  className="w-full aspect-[1/1.4] shadow-2xl rounded-sm transition-all duration-300 relative flex flex-col group"
+                  style={{ backgroundColor: pageColor[settings.theme] }}
+                >
+                  {settings.isRulerEnabled && (
+                    <div className="absolute top-1/2 left-0 right-0 h-10 bg-blue-500/10 border-y border-blue-500/30 pointer-events-none z-10 flex items-center justify-center">
+                       <div className="w-full h-[1px] bg-blue-500/20" />
+                    </div>
+                  )}
+                  
+                  {pdf.fileUrl ? (
+                    <div className="w-full h-full relative overflow-hidden flex items-center justify-center">
+                      <canvas 
+                        ref={el => {
+                           canvasRefs.current[pNum] = el;
+                           // We don't trigger render immediately here as the useEffect handles it cleanly
+                        }}
+                        className="w-full h-full object-contain"
+                        style={{ 
+                          mixBlendMode: settings.theme === ThemeMode.DARK || settings.theme === ThemeMode.AMOLED ? 'difference' : 'normal',
+                          filter: settings.theme === ThemeMode.SEPIA ? 'sepia(0.3) contrast(1.1)' : 'none'
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="p-12 flex-1">
+                      <div className="flex justify-between items-center mb-8 opacity-40 text-[10px] font-semibold tracking-widest uppercase">
+                        <span>{pdf.title}</span>
+                        <span>Page {pNum}</span>
+                      </div>
+                      <div className="flex-1 font-serif text-justify space-y-6" style={{ fontSize: `${settings.fontSize}px`, lineHeight: settings.lineHeight }}>
+                        <h1 className="text-2xl font-bold mb-8">Chapter {Math.ceil(pNum / 10)}</h1>
+                        <p>The silhouette of the great structure loomed against the twilight sky. It was a testament to the ambitions of an era long since passed into legend. Everywhere one looked, there were intricate carvings that whispered secrets of a bygone age.</p>
+                        <p>As I stood there, the cool evening air began to settle. The world seemed to hold its breath. This was the moment I had waited for—the culmination of years of study and sacrifice. The heavy tome in my satchel felt suddenly light.</p>
+                      </div>
+                      <div className="mt-8 text-center opacity-30 text-xs">{pNum}</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 
-      {/* Top Overlay UI (Anybooks style) */}
       <div className={`absolute top-0 left-0 right-0 z-50 transition-all duration-300 transform ${showControls ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'}`}>
         <div className="bg-white/90 dark:bg-black/80 backdrop-blur-lg border-b dark:border-white/10 px-4 h-16 flex items-center justify-between shadow-sm">
           <div className="flex items-center gap-4">
@@ -151,9 +259,6 @@ const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings }) => 
             <button className="p-2 hover:bg-black/5 dark:hover:bg-white/10 rounded-full transition-colors dark:text-white">
               <Search size={20} />
             </button>
-            <button className="p-2 hover:bg-black/5 dark:hover:bg-white/10 rounded-full transition-colors dark:text-white">
-              <BookmarkIcon size={20} />
-            </button>
             <button 
               onClick={(e) => { e.stopPropagation(); setShowSettingsModal(true); }}
               className="p-2 hover:bg-black/5 dark:hover:bg-white/10 rounded-full transition-colors dark:text-white"
@@ -164,7 +269,6 @@ const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings }) => 
         </div>
       </div>
 
-      {/* Bottom Overlay UI (Anybooks style) */}
       <div className={`absolute bottom-0 left-0 right-0 z-50 transition-all duration-300 transform ${showControls ? 'translate-y-0 opacity-100' : 'translate-y-full opacity-0'}`}>
         <div className="bg-white/90 dark:bg-black/80 backdrop-blur-lg border-t dark:border-white/10 px-6 pt-4 pb-8 shadow-xl">
           <div className="flex items-center gap-4 mb-6">
@@ -172,13 +276,13 @@ const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings }) => 
             <input 
               type="range"
               min="1"
-              max={pdf.totalPages}
+              max={pdfInstance.current?.numPages || pdf.totalPages || 1}
               value={currentPage}
               onChange={(e) => handlePageChange(parseInt(e.target.value))}
               onClick={(e) => e.stopPropagation()}
               className="flex-1 h-1 bg-slate-200 dark:bg-slate-700 rounded-full appearance-none accent-blue-600"
             />
-            <span className="text-xs font-medium dark:text-slate-400">{pdf.totalPages}</span>
+            <span className="text-xs font-medium dark:text-slate-400">{pdfInstance.current?.numPages || pdf.totalPages}</span>
           </div>
           
           <div className="flex justify-between items-center px-4">
@@ -220,7 +324,6 @@ const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings }) => 
         </div>
       </div>
 
-      {/* Settings Modal (Overlay) */}
       {showSettingsModal && (
         <div 
           className="absolute inset-0 z-[100] bg-black/40 backdrop-blur-sm flex flex-col justify-end"
@@ -240,7 +343,6 @@ const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings }) => 
               </button>
             </div>
 
-            {/* Brightness */}
             <div className="space-y-4">
               <div className="flex justify-between text-xs font-semibold text-slate-500 uppercase tracking-wider">
                 <span>Brightness</span>
@@ -260,7 +362,6 @@ const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings }) => 
               </div>
             </div>
 
-            {/* Themes */}
             <div className="space-y-4">
                <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Appearance</h4>
                <div className="flex justify-between gap-4">
@@ -277,7 +378,6 @@ const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings }) => 
                </div>
             </div>
 
-            {/* Font Control */}
             <div className="space-y-4">
               <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Typography</h4>
               <div className="flex items-center justify-between p-4 bg-slate-100 dark:bg-slate-800 rounded-2xl">
@@ -292,40 +392,26 @@ const Reader: React.FC<ReaderProps> = ({ pdfs, settings, onUpdateSettings }) => 
                 >A+</button>
               </div>
             </div>
-
-            <div className="grid grid-cols-2 gap-4">
-                <button 
-                  onClick={() => onUpdateSettings({ ...settings, lineHeight: 1.2 })}
-                  className={`py-3 rounded-xl border flex flex-center gap-2 items-center justify-center font-bold ${settings.lineHeight === 1.2 ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20 text-blue-600' : 'border-slate-200 dark:border-slate-800 dark:text-white'}`}
-                >
-                  <AlignLeft size={16} /> Tight
-                </button>
-                <button 
-                   onClick={() => onUpdateSettings({ ...settings, lineHeight: 1.8 })}
-                   className={`py-3 rounded-xl border flex flex-center gap-2 items-center justify-center font-bold ${settings.lineHeight === 1.8 ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20 text-blue-600' : 'border-slate-200 dark:border-slate-800 dark:text-white'}`}
-                >
-                  <AlignLeft size={16} /> Loose
-                </button>
-            </div>
           </div>
         </div>
       )}
 
-      {/* Tap Gestures Overlay (Invisible zones) */}
-      <div className="absolute inset-0 pointer-events-none flex">
-        <div 
-          className="w-1/4 h-full pointer-events-auto" 
-          onClick={(e) => { e.stopPropagation(); handlePageChange(currentPage - 1); }}
-        />
-        <div 
-          className="w-2/4 h-full pointer-events-auto" 
-          onClick={toggleControls}
-        />
-        <div 
-          className="w-1/4 h-full pointer-events-auto" 
-          onClick={(e) => { e.stopPropagation(); handlePageChange(currentPage + 1); }}
-        />
-      </div>
+      {!loading && (
+        <div className="absolute inset-0 pointer-events-none flex">
+          <div 
+            className="w-1/4 h-full pointer-events-auto cursor-w-resize" 
+            onClick={(e) => { e.stopPropagation(); handlePageChange(currentPage - 1); }}
+          />
+          <div 
+            className="w-2/4 h-full pointer-events-auto" 
+            onClick={toggleControls}
+          />
+          <div 
+            className="w-1/4 h-full pointer-events-auto cursor-e-resize" 
+            onClick={(e) => { e.stopPropagation(); handlePageChange(currentPage + 1); }}
+          />
+        </div>
+      )}
     </div>
   );
 };

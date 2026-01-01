@@ -1,20 +1,49 @@
 
-import React from 'react';
+import React, { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { PDFDocument } from '../types';
-import { Search, MoreVertical, FileText, Grid, List as ListIcon, Plus, BookOpen } from 'lucide-react';
+import { Search, MoreVertical, FileText, Grid, List as ListIcon, Plus, BookOpen, Upload } from 'lucide-react';
 
 interface LibraryProps {
   pdfs: PDFDocument[];
+  onAddPdf: (pdf: PDFDocument) => void;
 }
 
-const Library: React.FC<LibraryProps> = ({ pdfs }) => {
+const Library: React.FC<LibraryProps> = ({ pdfs, onAddPdf }) => {
   const navigate = useNavigate();
-  const [viewMode, setViewMode] = React.useState<'grid' | 'list'>('grid');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && file.type === 'application/pdf') {
+      const fileUrl = URL.createObjectURL(file);
+      const newPdf: PDFDocument = {
+        id: Math.random().toString(36).substr(2, 9),
+        title: file.name.replace('.pdf', ''),
+        author: 'Unknown Author',
+        coverUrl: `https://picsum.photos/seed/${file.name}/400/600`,
+        totalPages: 0,
+        currentPage: 1,
+        lastRead: new Date(),
+        size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
+        fileUrl: fileUrl
+      };
+      onAddPdf(newPdf);
+      navigate(`/reader/${newPdf.id}`);
+    }
+  };
 
   return (
     <div className="h-full flex flex-col bg-white dark:bg-slate-900 transition-colors duration-300">
-      {/* Top Header */}
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        onChange={handleFileChange} 
+        accept=".pdf" 
+        className="hidden" 
+      />
+
       <header className="px-4 py-4 flex items-center justify-between border-b dark:border-slate-800">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
@@ -32,13 +61,9 @@ const Library: React.FC<LibraryProps> = ({ pdfs }) => {
           >
             {viewMode === 'grid' ? <ListIcon size={20} /> : <Grid size={20} />}
           </button>
-          <button className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full transition-colors text-slate-600 dark:text-slate-400">
-            <MoreVertical size={20} />
-          </button>
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="flex-1 overflow-y-auto p-4 scroll-smooth">
         <div className="mb-6">
           <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-4">Recent</h2>
@@ -51,12 +76,14 @@ const Library: React.FC<LibraryProps> = ({ pdfs }) => {
               >
                 <div className="aspect-[2/3] w-full rounded-lg overflow-hidden shadow-md group-hover:shadow-xl transition-all mb-2 relative">
                   <img src={pdf.coverUrl} alt={pdf.title} className="w-full h-full object-cover" />
-                  <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-200">
-                    <div 
-                      className="h-full bg-blue-600" 
-                      style={{ width: `${(pdf.currentPage / pdf.totalPages) * 100}%` }}
-                    />
-                  </div>
+                  {pdf.totalPages > 0 && (
+                    <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-200">
+                      <div 
+                        className="h-full bg-blue-600" 
+                        style={{ width: `${(pdf.currentPage / pdf.totalPages) * 100}%` }}
+                      />
+                    </div>
+                  )}
                 </div>
                 <h3 className="text-xs font-semibold truncate dark:text-white">{pdf.title}</h3>
                 <p className="text-[10px] text-slate-500">{pdf.author}</p>
@@ -113,24 +140,28 @@ const Library: React.FC<LibraryProps> = ({ pdfs }) => {
         </div>
       </main>
 
-      {/* Floating Action Button */}
-      <button className="fixed bottom-8 right-8 w-14 h-14 bg-blue-600 text-white rounded-full shadow-lg shadow-blue-500/30 flex items-center justify-center hover:scale-110 active:scale-95 transition-all">
+      <button 
+        onClick={() => fileInputRef.current?.click()}
+        className="fixed bottom-8 right-8 w-14 h-14 bg-blue-600 text-white rounded-full shadow-lg shadow-blue-500/30 flex items-center justify-center hover:scale-110 active:scale-95 transition-all z-10"
+      >
         <Plus size={28} />
       </button>
 
-      {/* Bottom Nav */}
       <nav className="border-t dark:border-slate-800 px-6 py-2 flex justify-between items-center bg-white dark:bg-slate-900">
         <div className="flex flex-col items-center text-blue-600">
           <BookOpen size={20} />
           <span className="text-[10px] font-bold mt-1">Library</span>
         </div>
-        <div className="flex flex-col items-center text-slate-400">
+        <div className="flex flex-col items-center text-slate-400 cursor-pointer">
           <FileText size={20} />
           <span className="text-[10px] font-medium mt-1">Recent</span>
         </div>
-        <div className="flex flex-col items-center text-slate-400">
-          <Search size={20} />
-          <span className="text-[10px] font-medium mt-1">Explore</span>
+        <div 
+           onClick={() => fileInputRef.current?.click()}
+           className="flex flex-col items-center text-slate-400 cursor-pointer"
+        >
+          <Upload size={20} />
+          <span className="text-[10px] font-medium mt-1">Import</span>
         </div>
       </nav>
     </div>

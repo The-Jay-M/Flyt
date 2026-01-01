@@ -9,10 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "lucide-react": "^0.562.0",
-    "react-router-dom": "^7.11.0",
-    "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "6.28.0",
+    "lucide-react": "0.462.0",
+    "pdfjs-dist": "4.8.69"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
