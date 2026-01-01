@@ -1,0 +1,7 @@
+{
+  "name": "Flyt PDF Reader",
+  "description": "An immersive PDF reading experience inspired by Anybooks and Xodo, featuring a clean UI, advanced annotation tools, and customizable themes.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
